@@ -22,9 +22,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from flask import Flask
 
 # ==================== НАСТРОЙКИ КОНФИГУРАЦИИ ====================
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "ВАШ_ТЕЛЕГРАМ_ТОКЕН")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", 123456789))
-GOOGLE_SHEET_KEY = os.environ.get("GOOGLE_SHEET_KEY", "КЛЮЧ_ТАБЛИЦЫ")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "8814120236:AAF66foOv1c9d9RllDKTsvOgXN58XuC2Mxk")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 855615522))
+GOOGLE_SHEET_KEY = os.environ.get("GOOGLE_SHEET_KEY", "1gGp8GTzVHIQKes0UK_9kUKYc1mmPqyJfkjOcP7Y6EEs")
 # ================================================================
 
 logging.basicConfig(level=logging.INFO)
