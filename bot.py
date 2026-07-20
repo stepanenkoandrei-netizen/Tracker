@@ -22,9 +22,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from flask import Flask
 
 # ==================== НАСТРОЙКИ КОНФИГУРАЦИИ ====================
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8814120236:AAF66foOv1c9d9RllDKTsvOgXN58XuC2Mxk")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", 855615522))
-GOOGLE_SHEET_KEY = os.environ.get("GOOGLE_SHEET_KEY", "1gGp8GTzVHIQKes0UK_9kUKYc1mmPqyJfkjOcP7Y6EEs")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "ВАШ_ТЕЛЕГРАМ_ТОКЕН")
+ADMIN_ID = int(os.environ.get("ADMIN_ID", 123456789))
+GOOGLE_SHEET_KEY = os.environ.get("GOOGLE_SHEET_KEY", "КЛЮЧ_ТАБЛИЦЫ")
 # ================================================================
 
 logging.basicConfig(level=logging.INFO)
@@ -303,7 +303,7 @@ async def cmd_start(message: types.Message):
         "• Можно использовать эмодзи в категориях\n\n"
         "📊 **Доступные команды:**\n"
         "• 📊 Баланс - текущий баланс\n"
-        "• 📈 График - визуализация расходов\n"
+        "• 📈 График - динамика доходов и расходов\n"
         "• 📋 История - последние операции\n"
         "• 📅 Отчет - подробный отчет за период\n"
         "• 🗑 Удалить - удаление операций"
@@ -700,8 +700,11 @@ async def send_balance(message: types.Message):
     
     await message.answer(text, parse_mode="Markdown", reply_markup=get_main_keyboard(message.from_user.id))
 
+# ==================== ЛИНЕЙНЫЙ ГРАФИК ДИНАМИКИ ====================
+
 @dp.message(F.text == "📈 График")
 async def send_chart(message: types.Message):
+    """Отправляет линейный график динамики доходов и расходов по дням"""
     await message.answer("🔄 Строю график... Подождите секунду.")
     
     operations = get_operations(30)
@@ -709,86 +712,89 @@ async def send_chart(message: types.Message):
         await message.answer("📭 Нет данных для построения графика.")
         return
     
+    # Собираем данные по дням
+    daily_income = defaultdict(float)
+    daily_expense = defaultdict(float)
     total_income = 0
     total_expense = 0
-    categories_exp = defaultdict(float)
-    categories_inc = defaultdict(float)
     
     for op in operations:
         try:
             amount = float(op.get('Сумма', 0))
-            category = op.get('Категория', 'Без категории')
+            date = op.get('Дата', '')
             if op.get('Тип') == 'Доход':
                 total_income += amount
-                categories_inc[category] += amount
+                daily_income[date] += amount
             else:
                 total_expense += amount
-                categories_exp[category] += amount
+                daily_expense[date] += amount
         except:
             continue
     
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+    # Сортируем даты
+    all_dates = sorted(set(daily_income.keys()) | set(daily_expense.keys()))
+    if not all_dates:
+        await message.answer("📭 Нет данных для построения графика.")
+        return
     
-    if categories_exp:
-        sorted_exp = sorted(categories_exp.items(), key=lambda x: x[1], reverse=True)[:8]
-        cats, vals = zip(*sorted_exp) if sorted_exp else ([], [])
-        colors = plt.cm.RdYlGn_r([i/len(vals) for i in range(len(vals))])
-        ax1.pie(vals, labels=cats, autopct='%1.1f%%', colors=colors, startangle=90)
-        ax1.set_title('Расходы по категориям', fontsize=14, fontweight='bold')
-    else:
-        ax1.text(0.5, 0.5, 'Нет расходов', ha='center', va='center')
-        ax1.set_title('Расходы по категориям', fontsize=14, fontweight='bold')
+    # Подготавливаем данные для графика
+    income_values = [daily_income.get(date, 0) for date in all_dates]
+    expense_values = [daily_expense.get(date, 0) for date in all_dates]
     
-    if categories_inc:
-        sorted_inc = sorted(categories_inc.items(), key=lambda x: x[1], reverse=True)[:6]
-        cats, vals = zip(*sorted_inc) if sorted_inc else ([], [])
-        colors = plt.cm.Greens([i/len(vals) for i in range(len(vals))])
-        ax2.pie(vals, labels=cats, autopct='%1.1f%%', colors=colors, startangle=90)
-        ax2.set_title('Доходы по категориям', fontsize=14, fontweight='bold')
-    else:
-        ax2.text(0.5, 0.5, 'Нет доходов', ha='center', va='center')
-        ax2.set_title('Доходы по категориям', fontsize=14, fontweight='bold')
+    # Создаем график
+    fig, ax = plt.subplots(figsize=(14, 7))
     
-    categories = ['Доходы', 'Расходы']
-    values = [total_income, total_expense]
-    colors3 = ['#2ecc71', '#e74c3c']
-    bars = ax3.bar(categories, values, color=colors3, alpha=0.7)
-    ax3.set_title('Соотношение доходов и расходов', fontsize=14, fontweight='bold')
-    ax3.set_ylabel('Сумма (₽)', fontsize=10)
+    # Линии доходов и расходов
+    ax.plot(all_dates, income_values, 'g-', label='Доходы', linewidth=2.5, marker='o', markersize=6, color='#2ecc71')
+    ax.plot(all_dates, expense_values, 'r-', label='Расходы', linewidth=2.5, marker='s', markersize=6, color='#e74c3c')
     
-    for bar, val in zip(bars, values):
-        height = bar.get_height()
-        ax3.text(bar.get_x() + bar.get_width()/2., height,
-                f'{val:,.0f}₽', ha='center', va='bottom', fontsize=10)
+    # Заливка области между линиями (если есть данные)
+    if income_values and expense_values:
+        ax.fill_between(all_dates, income_values, expense_values, 
+                        where=[i > e for i, e in zip(income_values, expense_values)],
+                        color='#2ecc71', alpha=0.1, label='Профицит')
+        ax.fill_between(all_dates, income_values, expense_values,
+                        where=[i < e for i, e in zip(income_values, expense_values)],
+                        color='#e74c3c', alpha=0.1, label='Дефицит')
     
-    ax4.axis('off')
+    # Настройка графика
+    ax.set_title('📈 Динамика доходов и расходов за 30 дней', fontsize=16, fontweight='bold', pad=20)
+    ax.set_xlabel('Дата', fontsize=12)
+    ax.set_ylabel('Сумма (₽)', fontsize=12)
+    ax.legend(loc='upper left', fontsize=11)
+    ax.grid(True, alpha=0.3, linestyle='--')
+    ax.tick_params(axis='x', rotation=45, labelsize=9)
+    
+    # Форматирование оси Y
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{int(x):,}'.replace(',', ' ')))
+    
+    # Добавляем итоговую статистику на график
     balance = total_income - total_expense
-    balance_color = "🟢" if balance >= 0 else "🔴"
-    stats_text = (
-        f"📊 **Сводка за месяц**\n\n"
-        f"{balance_color} **Баланс:** {format_currency(balance)}\n\n"
-        f"💵 **Доходы:** {format_currency(total_income)}\n"
-        f"💰 **Расходы:** {format_currency(total_expense)}\n\n"
-        f"📊 **Операций:** {len(operations)}\n"
-        f"📈 **Средний доход:** {format_currency(total_income/30 if total_income > 0 else 0)}\n"
-        f"📉 **Средний расход:** {format_currency(total_expense/30 if total_expense > 0 else 0)}"
-    )
-    ax4.text(0.1, 0.5, stats_text, transform=ax4.transAxes, fontsize=12,
-             verticalalignment='center', bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.5))
-    ax4.set_title('Статистика', fontsize=14, fontweight='bold')
+    stats_text = f"💰 Баланс: {format_currency(balance)}"
+    ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=12,
+            verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     
-    plt.suptitle(f'📊 Финансовый отчет за {datetime.now().strftime("%B %Y")}', 
-                fontsize=18, fontweight='bold')
     plt.tight_layout()
     
+    # Сохраняем в буфер
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=300, bbox_inches='tight')
     buf.seek(0)
     plt.close()
     
+    # Отправляем
+    caption = (
+        f"📊 **Динамика финансов за 30 дней**\n\n"
+        f"💵 Доходы: {format_currency(total_income)}\n"
+        f"💰 Расходы: {format_currency(total_expense)}\n"
+        f"📈 Баланс: {format_currency(balance)}\n"
+        f"📋 Операций: {len(operations)}"
+    )
+    
     await message.answer_photo(
-        BufferedInputFile(buf.getvalue(), filename="report.png"),
-        caption=f"📊 График финансов за последние 30 дней",
+        BufferedInputFile(buf.getvalue(), filename="chart.png"),
+        caption=caption,
+        parse_mode="Markdown",
         reply_markup=get_main_keyboard(message.from_user.id)
     )
 
@@ -832,6 +838,7 @@ async def ask_period(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("report_"))
 async def generate_period_report(callback: types.CallbackQuery, state: FSMContext):
+    """Генерирует отчет за выбранный период с разделением доходов и расходов"""
     await callback.answer("🔄 Генерирую отчет...")
     
     days = int(callback.data.split("_")[1])
@@ -841,43 +848,69 @@ async def generate_period_report(callback: types.CallbackQuery, state: FSMContex
         await callback.message.edit_text(f"📭 Нет операций за выбранный период ({days} дней).")
         return
     
+    # Разделяем доходы и расходы
     total_income = 0
     total_expense = 0
-    categories = defaultdict(float)
+    categories_exp = defaultdict(float)
+    categories_inc = defaultdict(float)
     
     for op in operations:
         try:
             amount = float(op.get('Сумма', 0))
             category = op.get('Категория', 'Без категории')
-            categories[category] += amount
             if op.get('Тип') == 'Доход':
                 total_income += amount
+                categories_inc[category] += amount
             else:
                 total_expense += amount
+                categories_exp[category] += amount
         except:
             continue
     
     balance = total_income - total_expense
     
+    # Создаем два графика: расходы и доходы
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
     
-    sorted_exp = sorted([(cat, amt) for cat, amt in categories.items() if amt > 0], 
-                       key=lambda x: x[1], reverse=True)[:8]
-    if sorted_exp:
-        cats, vals = zip(*sorted_exp)
+    # 1. Расходы по категориям (только расходы) - улучшенные подписи
+    if categories_exp:
+        sorted_exp = sorted(categories_exp.items(), key=lambda x: x[1], reverse=True)[:8]
+        cats, vals = zip(*sorted_exp) if sorted_exp else ([], [])
         colors = plt.cm.RdYlGn_r([i/len(vals) for i in range(len(vals))])
-        ax1.pie(vals, labels=cats, autopct='%1.1f%%', colors=colors, startangle=90)
+        wedges, texts, autotexts = ax1.pie(
+            vals, 
+            labels=cats, 
+            autopct=lambda pct: f'{pct:.1f}%' if pct > 2 else '',
+            colors=colors, 
+            startangle=90,
+            labeldistance=1.2,
+            pctdistance=0.8,
+            textprops={'fontsize': 9}
+        )
         ax1.set_title('Расходы по категориям', fontsize=14, fontweight='bold')
     else:
         ax1.text(0.5, 0.5, 'Нет расходов', ha='center', va='center')
         ax1.set_title('Расходы по категориям', fontsize=14, fontweight='bold')
     
-    sizes = [total_income, total_expense]
-    labels = ['Доходы', 'Расходы']
-    colors2 = ['#2ecc71', '#e74c3c']
-    ax2.pie(sizes, labels=labels, autopct='%1.1f%%', colors=colors2, startangle=90)
-    ax2.set_title(f'Доходы: {format_currency(total_income)} | Расходы: {format_currency(total_expense)}', 
-                 fontsize=12, fontweight='bold')
+    # 2. Доходы по категориям (только доходы) - улучшенные подписи
+    if categories_inc:
+        sorted_inc = sorted(categories_inc.items(), key=lambda x: x[1], reverse=True)[:6]
+        cats, vals = zip(*sorted_inc) if sorted_inc else ([], [])
+        colors = plt.cm.Greens([i/len(vals) for i in range(len(vals))])
+        wedges, texts, autotexts = ax2.pie(
+            vals, 
+            labels=cats, 
+            autopct=lambda pct: f'{pct:.1f}%' if pct > 2 else '',
+            colors=colors, 
+            startangle=90,
+            labeldistance=1.2,
+            pctdistance=0.8,
+            textprops={'fontsize': 9}
+        )
+        ax2.set_title('Доходы по категориям', fontsize=14, fontweight='bold')
+    else:
+        ax2.text(0.5, 0.5, 'Нет доходов', ha='center', va='center')
+        ax2.set_title('Доходы по категориям', fontsize=14, fontweight='bold')
     
     plt.suptitle(f'📊 Финансовый отчет за {days} дней', fontsize=16, fontweight='bold')
     plt.tight_layout()
