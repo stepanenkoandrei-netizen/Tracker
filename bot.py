@@ -89,7 +89,7 @@ def init_worksheets():
         settings_ws = sheet.add_worksheet("Settings", 100, 10)
         settings_ws.append_row(["Категории расходов", "Категории доходов"])
         default_expenses = ["🍎 Продукты", "🚗 Транспорт", "🏠 ЖКХ", "☕ Кафе", 
-                          "🛍️ Шопинг", "💊 Здоровье", "🎮 Развлечения", "📚 Образование", "🚕 Такси"]
+                  "🛍️ Шопинг", "💊 Здоровье", "🎮 Развлечения", "📚 Образование", "🚕 Такси"]
         default_incomes = ["💰 Зарплата", "💳 Фриланс", "📈 Инвестиции", "🎁 Подарки", "💵 Прочее"]
         
         for i, cat in enumerate(default_expenses, 2):
@@ -328,10 +328,10 @@ def parse_period(text):
     
     return None
 
-# ==================== ФУНКЦИЯ ПОСТРОЕНИЯ ГРАФИКА ====================
+# ==================== ФУНКЦИЯ ПОСТРОЕНИЯ ГРАФИКА (ИСПРАВЛЕННАЯ) ====================
 
 def create_chart(operations, days, title="Динамика доходов и расходов"):
-    """Создает комбинированный график с группировкой по неделям"""
+    """Создает комбинированный график — для коротких периодов (≤14 дней) показывает дни, для длинных — недели"""
     
     daily_income = defaultdict(float)
     daily_expense = defaultdict(float)
@@ -355,47 +355,60 @@ def create_chart(operations, days, title="Динамика доходов и р�
     if not all_dates:
         return None, 0, 0, 0
     
-    weekly_income = defaultdict(float)
-    weekly_expense = defaultdict(float)
+    # === Определяем, нужно ли группировать по неделям ===
+    USE_WEEKLY = days > 14
     
-    def get_week_start(date_str):
-        try:
-            dt = datetime.strptime(date_str, '%Y-%m-%d')
-            start = dt - timedelta(days=dt.weekday())
-            return start.strftime('%Y-%m-%d')
-        except:
-            return date_str
-    
-    for date, amount in daily_income.items():
-        week_start = get_week_start(date)
-        weekly_income[week_start] += amount
-    
-    for date, amount in daily_expense.items():
-        week_start = get_week_start(date)
-        weekly_expense[week_start] += amount
-    
-    week_dates = sorted(set(weekly_income.keys()) | set(weekly_expense.keys()))
-    
-    if len(week_dates) < 3:
+    if USE_WEEKLY:
+        weekly_income = defaultdict(float)
+        weekly_expense = defaultdict(float)
+        
+        def get_week_start(date_str):
+            try:
+                dt = datetime.strptime(date_str, '%Y-%m-%d')
+                start = dt - timedelta(days=dt.weekday())
+                return start.strftime('%Y-%m-%d')
+            except:
+                return date_str
+        
+        for date, amount in daily_income.items():
+            week_start = get_week_start(date)
+            weekly_income[week_start] += amount
+        
+        for date, amount in daily_expense.items():
+            week_start = get_week_start(date)
+            weekly_expense[week_start] += amount
+        
+        week_dates = sorted(set(weekly_income.keys()) | set(weekly_expense.keys()))
+        
+        # Если недель меньше 2, всё равно показываем дни
+        if len(week_dates) < 2:
+            week_dates = all_dates
+            weekly_income = daily_income
+            weekly_expense = daily_expense
+            USE_WEEKLY = False
+        else:
+            income_values = [weekly_income.get(date, 0) for date in week_dates]
+            expense_values = [weekly_expense.get(date, 0) for date in week_dates]
+    else:
         week_dates = all_dates
-        weekly_income = daily_income
-        weekly_expense = daily_expense
+        income_values = [daily_income.get(date, 0) for date in week_dates]
+        expense_values = [daily_expense.get(date, 0) for date in week_dates]
     
-    income_values = [weekly_income.get(date, 0) for date in week_dates]
-    expense_values = [weekly_expense.get(date, 0) for date in week_dates]
-    
-    def format_week_label(date_str):
+    # === Форматируем подписи ===
+    def format_label(date_str):
         try:
             dt = datetime.strptime(date_str, '%Y-%m-%d')
-            if len(week_dates) < 3:
-                return date_str[5:]
-            week_num = dt.isocalendar()[1]
-            return f"{week_num} нед"
+            if not USE_WEEKLY or len(week_dates) < 3:
+                return dt.strftime('%d.%m')
+            else:
+                week_num = dt.isocalendar()[1]
+                return f"{week_num} нед"
         except:
             return date_str
     
-    week_labels = [format_week_label(d) for d in week_dates]
+    week_labels = [format_label(d) for d in week_dates]
     
+    # Создаем график
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [3, 1]})
     
     x = range(len(week_dates))
@@ -416,7 +429,8 @@ def create_chart(operations, days, title="Динамика доходов и р�
             ax1.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(expense_values)*0.01,
                     f'{int(val):,}'.replace(',', ' '), ha='center', va='bottom', fontsize=8)
     
-    ax1.set_title(f'📈 {title} за {days} дней (по неделям)', fontsize=16, fontweight='bold', pad=20)
+    data_type = "ежедневно" if not USE_WEEKLY else "по неделям"
+    ax1.set_title(f'📈 {title} за {days} дней ({data_type})', fontsize=16, fontweight='bold', pad=20)
     ax1.set_ylabel('Сумма (₽)', fontsize=12)
     ax1.set_xticks(x)
     ax1.set_xticklabels(week_labels, rotation=45, ha='right')
@@ -433,6 +447,7 @@ def create_chart(operations, days, title="Динамика доходов и р�
     ax1.text(0.02, 0.98, stats_text, transform=ax1.transAxes, fontsize=11,
              verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
     
+    # === НАКОПЛЕННЫЙ ИТОГ ===
     cumulative_income = []
     cumulative_expense = []
     cum_inc = 0
@@ -450,8 +465,10 @@ def create_chart(operations, days, title="Динамика доходов и р�
              linewidth=2.5, color='#e74c3c', marker='s', markersize=6)
     ax2.fill_between(week_dates, cumulative_income, cumulative_expense,
                      color='#3498db', alpha=0.15)
+    
+    xlabel = 'День' if not USE_WEEKLY else 'Неделя'
     ax2.set_title('📊 Накопленный итог за период', fontsize=12, fontweight='bold')
-    ax2.set_xlabel('Неделя', fontsize=10)
+    ax2.set_xlabel(xlabel, fontsize=10)
     ax2.set_ylabel('Сумма (₽)', fontsize=10)
     ax2.legend(loc='upper left', fontsize=9)
     ax2.grid(True, alpha=0.3, linestyle='--')
@@ -1075,7 +1092,7 @@ async def generate_period_report(callback: types.CallbackQuery, state: FSMContex
     
     balance = total_income - total_expense
     
-    # === УЛУЧШЕННЫЕ ДИАГРАММЫ (БЕЗ НАЛОЖЕНИЙ) ===
+    # === УЛУЧШЕННЫЕ ДИАГРАММЫ ===
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
     
     # ===== 1. ДОХОДЫ ПО КАТЕГОРИЯМ =====
