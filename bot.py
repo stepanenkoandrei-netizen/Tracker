@@ -10,6 +10,7 @@ import random
 import os
 import json
 import threading
+import re
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -124,14 +125,18 @@ class DeleteStates(StatesGroup):
     waiting_for_id = State()
     waiting_for_confirm = State()
 
+class ChartStates(StatesGroup):
+    waiting_for_period = State()
+
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 
 def get_main_keyboard(user_id):
     buttons = [
         [KeyboardButton(text="💰 Расход"), KeyboardButton(text="💵 Доход")],
         [KeyboardButton(text="⚡ Быстрый ввод"), KeyboardButton(text="📊 Баланс")],
-        [KeyboardButton(text="📈 График"), KeyboardButton(text="📋 История")],
-        [KeyboardButton(text="📅 Отчет"), KeyboardButton(text="🗑 Удалить")],
+        [KeyboardButton(text="📈 График")],
+        [KeyboardButton(text="📋 История"), KeyboardButton(text="📅 Отчет")],
+        [KeyboardButton(text="🗑 Удалить")],
     ]
     if user_id == ADMIN_ID:
         buttons.append([KeyboardButton(text="⚙️ Админ-панель")])
@@ -287,6 +292,173 @@ def get_frequent_categories_kb(tx_type=None):
     buttons.append([KeyboardButton(text="📋 Все категории"), KeyboardButton(text="❌ Отмена")])
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
+def parse_period(text):
+    """
+    Парсит текстовый ввод периода и возвращает количество дней
+    Поддерживает: "30", "7 дней", "2 недели", "1 месяц", "3 месяца"
+    """
+    text = text.lower().strip()
+    
+    # Пробуем парсить как число (дни)
+    try:
+        days = int(text)
+        if days > 0:
+            return days
+    except:
+        pass
+    
+    # Парсим "X дней"
+    match = re.search(r'(\d+)\s*дн', text)
+    if match:
+        return int(match.group(1))
+    
+    # Парсим "X недель"
+    match = re.search(r'(\d+)\s*нед', text)
+    if match:
+        return int(match.group(1)) * 7
+    
+    # Парсим "X месяц"
+    match = re.search(r'(\d+)\s*мес', text)
+    if match:
+        return int(match.group(1)) * 30
+    
+    # Парсим "X недели"
+    match = re.search(r'(\d+)\s*нед', text)
+    if match:
+        return int(match.group(1)) * 7
+    
+    # Парсим "месяц" (1 месяц)
+    if 'месяц' in text or 'мес' in text:
+        if 'пол' not in text:  # не "полмесяца"
+            return 30
+    
+    # Парсим "неделя" (1 неделя)
+    if 'недел' in text:
+        return 7
+    
+    return None
+
+# ==================== ФУНКЦИЯ ПОСТРОЕНИЯ ГРАФИКА ====================
+
+def create_chart(operations, days, title="Динамика доходов и расходов"):
+    """Создает комбинированный график на основе операций"""
+    # Собираем данные по дням
+    daily_income = defaultdict(float)
+    daily_expense = defaultdict(float)
+    total_income = 0
+    total_expense = 0
+    
+    for op in operations:
+        try:
+            amount = float(op.get('Сумма', 0))
+            date = op.get('Дата', '')
+            if op.get('Тип') == 'Доход':
+                total_income += amount
+                daily_income[date] += amount
+            else:
+                total_expense += amount
+                daily_expense[date] += amount
+        except:
+            continue
+    
+    # Сортируем даты
+    all_dates = sorted(set(daily_income.keys()) | set(daily_expense.keys()))
+    if not all_dates:
+        return None, 0, 0, 0
+    
+    income_values = [daily_income.get(date, 0) for date in all_dates]
+    expense_values = [daily_expense.get(date, 0) for date in all_dates]
+    
+    # Сглаживание (скользящее среднее за 3 дня)
+    def smooth(data, window=3):
+        if len(data) < window:
+            return data
+        result = []
+        for i in range(len(data)):
+            start = max(0, i - window + 1)
+            end = i + 1
+            result.append(sum(data[start:end]) / (end - start))
+        return result
+    
+    income_smooth = smooth(income_values)
+    expense_smooth = smooth(expense_values)
+    
+    # Создаем график
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [3, 1]})
+    
+    # === ОСНОВНОЙ ГРАФИК ===
+    # Оригинальные данные (тонкие линии с прозрачностью)
+    ax1.plot(all_dates, income_values, 'g-', label='Доходы (ежедневно)', 
+             linewidth=1.5, alpha=0.4, color='#2ecc71', marker='o', markersize=4)
+    ax1.plot(all_dates, expense_values, 'r-', label='Расходы (ежедневно)', 
+             linewidth=1.5, alpha=0.4, color='#e74c3c', marker='s', markersize=4)
+    
+    # Сглаженные линии (жирные, показывают тренд)
+    ax1.plot(all_dates, income_smooth, 'g-', label='Тренд доходов', 
+             linewidth=3, color='#27ae60')
+    ax1.plot(all_dates, expense_smooth, 'r-', label='Тренд расходов', 
+             linewidth=3, color='#c0392b')
+    
+    # Заливка между сглаженными линиями
+    ax1.fill_between(all_dates, income_smooth, expense_smooth,
+                     where=[i > e for i, e in zip(income_smooth, expense_smooth)],
+                     color='#2ecc71', alpha=0.15, label='Профицит')
+    ax1.fill_between(all_dates, income_smooth, expense_smooth,
+                     where=[i < e for i, e in zip(income_smooth, expense_smooth)],
+                     color='#e74c3c', alpha=0.15, label='Дефицит')
+    
+    # Настройка основного графика
+    ax1.set_title(f'📈 {title} за {days} дней', fontsize=16, fontweight='bold', pad=20)
+    ax1.set_ylabel('Сумма (₽)', fontsize=12)
+    ax1.legend(loc='upper left', fontsize=10)
+    ax1.grid(True, alpha=0.3, linestyle='--')
+    ax1.tick_params(axis='x', rotation=45, labelsize=9)
+    ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{int(x):,}'.replace(',', ' ')))
+    
+    # Добавляем статистику на график
+    balance = total_income - total_expense
+    stats_text = (
+        f"💰 Баланс: {format_currency(balance)}\n"
+        f"📈 Средний доход: {format_currency(total_income/days if total_income > 0 else 0)}\n"
+        f"📉 Средний расход: {format_currency(total_expense/days if total_expense > 0 else 0)}"
+    )
+    ax1.text(0.02, 0.98, stats_text, transform=ax1.transAxes, fontsize=11,
+             verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+    
+    # === ДОПОЛНИТЕЛЬНЫЙ ГРАФИК: НАКОПЛЕННЫЙ ИТОГ ===
+    cumulative_income = []
+    cumulative_expense = []
+    cum_inc = 0
+    cum_exp = 0
+    for inc, exp in zip(income_values, expense_values):
+        cum_inc += inc
+        cum_exp += exp
+        cumulative_income.append(cum_inc)
+        cumulative_expense.append(cum_exp)
+    
+    ax2.plot(all_dates, cumulative_income, 'g-', label='Накопленные доходы', 
+             linewidth=2, color='#2ecc71')
+    ax2.plot(all_dates, cumulative_expense, 'r-', label='Накопленные расходы', 
+             linewidth=2, color='#e74c3c')
+    ax2.fill_between(all_dates, cumulative_income, cumulative_expense,
+                     color='#3498db', alpha=0.2)
+    ax2.set_title('📊 Накопленный итог за период', fontsize=12, fontweight='bold')
+    ax2.set_xlabel('Дата', fontsize=10)
+    ax2.set_ylabel('Сумма (₽)', fontsize=10)
+    ax2.legend(loc='upper left', fontsize=9)
+    ax2.grid(True, alpha=0.3, linestyle='--')
+    ax2.tick_params(axis='x', rotation=45, labelsize=8)
+    ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{int(x):,}'.replace(',', ' ')))
+    
+    plt.tight_layout()
+    
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=300, bbox_inches='tight')
+    buf.seek(0)
+    plt.close()
+    
+    return buf, total_income, total_expense, balance
+
 # ==================== ОБРАБОТЧИКИ КОМАНД ====================
 
 @dp.message(Command("start"))
@@ -303,12 +475,141 @@ async def cmd_start(message: types.Message):
         "• Можно использовать эмодзи в категориях\n\n"
         "📊 **Доступные команды:**\n"
         "• 📊 Баланс - текущий баланс\n"
-        "• 📈 График - динамика доходов и расходов\n"
+        "• 📈 График - построить график за любой период\n"
         "• 📋 История - последние операции\n"
         "• 📅 Отчет - подробный отчет за период\n"
         "• 🗑 Удалить - удаление операций"
     )
     await message.answer(welcome_text, parse_mode="Markdown", reply_markup=get_main_keyboard(message.from_user.id))
+
+# ==================== ГРАФИК С ВВОДОМ ПЕРИОДА ====================
+
+@dp.message(F.text == "📈 График")
+async def chart_start(message: types.Message, state: FSMContext):
+    """Запрос периода для графика"""
+    await state.set_state(ChartStates.waiting_for_period)
+    
+    # Добавляем быстрые кнопки для удобства
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📅 30 дней", callback_data="chart_quick_30")],
+        [InlineKeyboardButton(text="📅 7 дней", callback_data="chart_quick_7")],
+        [InlineKeyboardButton(text="📅 90 дней", callback_data="chart_quick_90")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_main")]
+    ])
+    
+    await message.answer(
+        "📊 **Введите период для графика:**\n\n"
+        "📌 **Примеры:**\n"
+        "• `30` — дней\n"
+        "• `7 дней`\n"
+        "• `2 недели`\n"
+        "• `1 месяц`\n"
+        "• `3 месяца`\n\n"
+        "Или используйте кнопки быстрого выбора:",
+        parse_mode="Markdown",
+        reply_markup=kb
+    )
+
+@dp.callback_query(ChartStates.waiting_for_period, F.data.startswith("chart_quick_"))
+async def quick_period_chart(callback: types.CallbackQuery, state: FSMContext):
+    """Быстрый выбор периода из кнопок"""
+    await callback.answer("🔄 Строю график...")
+    
+    days = int(callback.data.split("_")[2])
+    operations = get_operations(days)
+    
+    if not operations:
+        await callback.message.edit_text(f"📭 Нет операций за {days} дней.")
+        return
+    
+    chart_data = create_chart(operations, days, f"Динамика доходов и расходов за {days} дней")
+    if chart_data[0] is None:
+        await callback.message.edit_text(f"📭 Нет данных для построения графика за {days} дней.")
+        return
+    
+    buf, total_income, total_expense, balance = chart_data
+    
+    caption = (
+        f"📊 **График за {days} дней**\n\n"
+        f"💵 Доходы: {format_currency(total_income)}\n"
+        f"💰 Расходы: {format_currency(total_expense)}\n"
+        f"📈 Баланс: {format_currency(balance)}\n"
+        f"📋 Операций: {len(operations)}"
+    )
+    
+    await callback.message.delete()
+    await callback.message.answer_photo(
+        BufferedInputFile(buf.getvalue(), filename="chart.png"),
+        caption=caption,
+        parse_mode="Markdown",
+        reply_markup=get_main_keyboard(callback.from_user.id)
+    )
+    await state.clear()
+
+@dp.message(ChartStates.waiting_for_period)
+async def process_period_input(message: types.Message, state: FSMContext):
+    """Обработка текстового ввода периода"""
+    if message.text == "❌ Отмена":
+        await cancel_action(message, state)
+        return
+    
+    # Парсим ввод
+    days = parse_period(message.text)
+    
+    if days is None or days <= 0:
+        await message.answer(
+            "❌ Не удалось распознать период.\n\n"
+            "📌 **Примеры правильного ввода:**\n"
+            "• `30` — дней\n"
+            "• `7 дней`\n"
+            "• `2 недели`\n"
+            "• `1 месяц`\n"
+            "• `3 месяца`\n\n"
+            "Попробуйте еще раз:",
+            parse_mode="Markdown"
+        )
+        return
+    
+    # Ограничиваем максимальный период (не более 365 дней)
+    if days > 365:
+        await message.answer(
+            "⚠️ Максимальный период — 365 дней (1 год).\n"
+            f"Вы ввели {days} дней. Попробуйте еще раз:"
+        )
+        return
+    
+    await message.answer(f"🔄 Строю график за {days} дней...")
+    
+    operations = get_operations(days)
+    
+    if not operations:
+        await message.answer(f"📭 Нет операций за {days} дней.")
+        await state.clear()
+        return
+    
+    chart_data = create_chart(operations, days, f"Динамика доходов и расходов за {days} дней")
+    if chart_data[0] is None:
+        await message.answer(f"📭 Нет данных для построения графика за {days} дней.")
+        await state.clear()
+        return
+    
+    buf, total_income, total_expense, balance = chart_data
+    
+    caption = (
+        f"📊 **График за {days} дней**\n\n"
+        f"💵 Доходы: {format_currency(total_income)}\n"
+        f"💰 Расходы: {format_currency(total_expense)}\n"
+        f"📈 Баланс: {format_currency(balance)}\n"
+        f"📋 Операций: {len(operations)}"
+    )
+    
+    await message.answer_photo(
+        BufferedInputFile(buf.getvalue(), filename="chart.png"),
+        caption=caption,
+        parse_mode="Markdown",
+        reply_markup=get_main_keyboard(message.from_user.id)
+    )
+    await state.clear()
 
 # ==================== БЫСТРЫЙ ВВОД ====================
 
@@ -700,104 +1001,6 @@ async def send_balance(message: types.Message):
     
     await message.answer(text, parse_mode="Markdown", reply_markup=get_main_keyboard(message.from_user.id))
 
-# ==================== ЛИНЕЙНЫЙ ГРАФИК ДИНАМИКИ ====================
-
-@dp.message(F.text == "📈 График")
-async def send_chart(message: types.Message):
-    """Отправляет линейный график динамики доходов и расходов по дням"""
-    await message.answer("🔄 Строю график... Подождите секунду.")
-    
-    operations = get_operations(30)
-    if not operations:
-        await message.answer("📭 Нет данных для построения графика.")
-        return
-    
-    # Собираем данные по дням
-    daily_income = defaultdict(float)
-    daily_expense = defaultdict(float)
-    total_income = 0
-    total_expense = 0
-    
-    for op in operations:
-        try:
-            amount = float(op.get('Сумма', 0))
-            date = op.get('Дата', '')
-            if op.get('Тип') == 'Доход':
-                total_income += amount
-                daily_income[date] += amount
-            else:
-                total_expense += amount
-                daily_expense[date] += amount
-        except:
-            continue
-    
-    # Сортируем даты
-    all_dates = sorted(set(daily_income.keys()) | set(daily_expense.keys()))
-    if not all_dates:
-        await message.answer("📭 Нет данных для построения графика.")
-        return
-    
-    # Подготавливаем данные для графика
-    income_values = [daily_income.get(date, 0) for date in all_dates]
-    expense_values = [daily_expense.get(date, 0) for date in all_dates]
-    
-    # Создаем график
-    fig, ax = plt.subplots(figsize=(14, 7))
-    
-    # Линии доходов и расходов
-    ax.plot(all_dates, income_values, 'g-', label='Доходы', linewidth=2.5, marker='o', markersize=6, color='#2ecc71')
-    ax.plot(all_dates, expense_values, 'r-', label='Расходы', linewidth=2.5, marker='s', markersize=6, color='#e74c3c')
-    
-    # Заливка области между линиями (если есть данные)
-    if income_values and expense_values:
-        ax.fill_between(all_dates, income_values, expense_values, 
-                        where=[i > e for i, e in zip(income_values, expense_values)],
-                        color='#2ecc71', alpha=0.1, label='Профицит')
-        ax.fill_between(all_dates, income_values, expense_values,
-                        where=[i < e for i, e in zip(income_values, expense_values)],
-                        color='#e74c3c', alpha=0.1, label='Дефицит')
-    
-    # Настройка графика
-    ax.set_title('📈 Динамика доходов и расходов за 30 дней', fontsize=16, fontweight='bold', pad=20)
-    ax.set_xlabel('Дата', fontsize=12)
-    ax.set_ylabel('Сумма (₽)', fontsize=12)
-    ax.legend(loc='upper left', fontsize=11)
-    ax.grid(True, alpha=0.3, linestyle='--')
-    ax.tick_params(axis='x', rotation=45, labelsize=9)
-    
-    # Форматирование оси Y
-    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{int(x):,}'.replace(',', ' ')))
-    
-    # Добавляем итоговую статистику на график
-    balance = total_income - total_expense
-    stats_text = f"💰 Баланс: {format_currency(balance)}"
-    ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, fontsize=12,
-            verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-    
-    plt.tight_layout()
-    
-    # Сохраняем в буфер
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=300, bbox_inches='tight')
-    buf.seek(0)
-    plt.close()
-    
-    # Отправляем
-    caption = (
-        f"📊 **Динамика финансов за 30 дней**\n\n"
-        f"💵 Доходы: {format_currency(total_income)}\n"
-        f"💰 Расходы: {format_currency(total_expense)}\n"
-        f"📈 Баланс: {format_currency(balance)}\n"
-        f"📋 Операций: {len(operations)}"
-    )
-    
-    await message.answer_photo(
-        BufferedInputFile(buf.getvalue(), filename="chart.png"),
-        caption=caption,
-        parse_mode="Markdown",
-        reply_markup=get_main_keyboard(message.from_user.id)
-    )
-
 @dp.message(F.text == "📋 История")
 async def show_history(message: types.Message):
     operations = get_operations(30)
@@ -838,7 +1041,6 @@ async def ask_period(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("report_"))
 async def generate_period_report(callback: types.CallbackQuery, state: FSMContext):
-    """Генерирует отчет за выбранный период с разделением доходов и расходов"""
     await callback.answer("🔄 Генерирую отчет...")
     
     days = int(callback.data.split("_")[1])
@@ -848,7 +1050,6 @@ async def generate_period_report(callback: types.CallbackQuery, state: FSMContex
         await callback.message.edit_text(f"📭 Нет операций за выбранный период ({days} дней).")
         return
     
-    # Разделяем доходы и расходы
     total_income = 0
     total_expense = 0
     categories_exp = defaultdict(float)
@@ -869,10 +1070,8 @@ async def generate_period_report(callback: types.CallbackQuery, state: FSMContex
     
     balance = total_income - total_expense
     
-    # Создаем два графика: расходы и доходы
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
     
-    # 1. Расходы по категориям (только расходы) - улучшенные подписи
     if categories_exp:
         sorted_exp = sorted(categories_exp.items(), key=lambda x: x[1], reverse=True)[:8]
         cats, vals = zip(*sorted_exp) if sorted_exp else ([], [])
@@ -892,7 +1091,6 @@ async def generate_period_report(callback: types.CallbackQuery, state: FSMContex
         ax1.text(0.5, 0.5, 'Нет расходов', ha='center', va='center')
         ax1.set_title('Расходы по категориям', fontsize=14, fontweight='bold')
     
-    # 2. Доходы по категориям (только доходы) - улучшенные подписи
     if categories_inc:
         sorted_inc = sorted(categories_inc.items(), key=lambda x: x[1], reverse=True)[:6]
         cats, vals = zip(*sorted_inc) if sorted_inc else ([], [])
@@ -1261,6 +1459,12 @@ async def go_back(message: types.Message, state: FSMContext):
             f"💵 **Введите сумму** операции [**{tx_type}**]:",
             parse_mode="Markdown",
             reply_markup=get_quick_amounts_kb()
+        )
+    elif current_state == ChartStates.waiting_for_period:
+        await state.clear()
+        await message.answer(
+            "🔙 Возврат в главное меню",
+            reply_markup=get_main_keyboard(message.from_user.id)
         )
     else:
         await cancel_action(message, state)
