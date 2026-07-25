@@ -322,14 +322,9 @@ def parse_period(text):
     if match:
         return int(match.group(1)) * 30
     
-    # Парсим "X недели"
-    match = re.search(r'(\d+)\s*нед', text)
-    if match:
-        return int(match.group(1)) * 7
-    
     # Парсим "месяц" (1 месяц)
     if 'месяц' in text or 'мес' in text:
-        if 'пол' not in text:  # не "полмесяца"
+        if 'пол' not in text:
             return 30
     
     # Парсим "неделя" (1 неделя)
@@ -338,10 +333,11 @@ def parse_period(text):
     
     return None
 
-# ==================== ФУНКЦИЯ ПОСТРОЕНИЯ ГРАФИКА ====================
+# ==================== ФУНКЦИЯ ПОСТРОЕНИЯ ГРАФИКА (УЛУЧШЕННАЯ) ====================
 
 def create_chart(operations, days, title="Динамика доходов и расходов"):
-    """Создает комбинированный график на основе операций"""
+    """Создает комбинированный график с группировкой по неделям"""
+    
     # Собираем данные по дням
     daily_income = defaultdict(float)
     daily_expense = defaultdict(float)
@@ -366,84 +362,109 @@ def create_chart(operations, days, title="Динамика доходов и р�
     if not all_dates:
         return None, 0, 0, 0
     
-    income_values = [daily_income.get(date, 0) for date in all_dates]
-    expense_values = [daily_expense.get(date, 0) for date in all_dates]
+    # === ГРУППИРУЕМ ПО НЕДЕЛЯМ ===
+    weekly_income = defaultdict(float)
+    weekly_expense = defaultdict(float)
     
-    # Сглаживание (скользящее среднее за 3 дня)
-    def smooth(data, window=3):
-        if len(data) < window:
-            return data
-        result = []
-        for i in range(len(data)):
-            start = max(0, i - window + 1)
-            end = i + 1
-            result.append(sum(data[start:end]) / (end - start))
-        return result
+    def get_week_start(date_str):
+        try:
+            dt = datetime.strptime(date_str, '%Y-%m-%d')
+            start = dt - timedelta(days=dt.weekday())
+            return start.strftime('%Y-%m-%d')
+        except:
+            return date_str
     
-    income_smooth = smooth(income_values)
-    expense_smooth = smooth(expense_values)
+    for date, amount in daily_income.items():
+        week_start = get_week_start(date)
+        weekly_income[week_start] += amount
+    
+    for date, amount in daily_expense.items():
+        week_start = get_week_start(date)
+        weekly_expense[week_start] += amount
+    
+    week_dates = sorted(set(weekly_income.keys()) | set(weekly_expense.keys()))
+    
+    # Если недель меньше 3, используем ежедневные данные
+    if len(week_dates) < 3:
+        week_dates = all_dates
+        weekly_income = daily_income
+        weekly_expense = daily_expense
+    
+    income_values = [weekly_income.get(date, 0) for date in week_dates]
+    expense_values = [weekly_expense.get(date, 0) for date in week_dates]
+    
+    def format_week_label(date_str):
+        try:
+            dt = datetime.strptime(date_str, '%Y-%m-%d')
+            if len(week_dates) < 3:
+                return date_str[5:]
+            week_num = dt.isocalendar()[1]
+            return f"{week_num} нед"
+        except:
+            return date_str
+    
+    week_labels = [format_week_label(d) for d in week_dates]
     
     # Создаем график
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [3, 1]})
     
-    # === ОСНОВНОЙ ГРАФИК ===
-    # Оригинальные данные (тонкие линии с прозрачностью)
-    ax1.plot(all_dates, income_values, 'g-', label='Доходы (ежедневно)', 
-             linewidth=1.5, alpha=0.4, color='#2ecc71', marker='o', markersize=4)
-    ax1.plot(all_dates, expense_values, 'r-', label='Расходы (ежедневно)', 
-             linewidth=1.5, alpha=0.4, color='#e74c3c', marker='s', markersize=4)
+    # === ОСНОВНОЙ ГРАФИК (НЕДЕЛЬНЫЕ ДАННЫЕ) ===
+    x = range(len(week_dates))
+    width = 0.35
     
-    # Сглаженные линии (жирные, показывают тренд)
-    ax1.plot(all_dates, income_smooth, 'g-', label='Тренд доходов', 
-             linewidth=3, color='#27ae60')
-    ax1.plot(all_dates, expense_smooth, 'r-', label='Тренд расходов', 
-             linewidth=3, color='#c0392b')
+    bars1 = ax1.bar([i - width/2 for i in x], income_values, width, 
+                    label='Доходы', color='#2ecc71', alpha=0.8, edgecolor='#27ae60')
+    bars2 = ax1.bar([i + width/2 for i in x], expense_values, width, 
+                    label='Расходы', color='#e74c3c', alpha=0.8, edgecolor='#c0392b')
     
-    # Заливка между сглаженными линиями
-    ax1.fill_between(all_dates, income_smooth, expense_smooth,
-                     where=[i > e for i, e in zip(income_smooth, expense_smooth)],
-                     color='#2ecc71', alpha=0.15, label='Профицит')
-    ax1.fill_between(all_dates, income_smooth, expense_smooth,
-                     where=[i < e for i, e in zip(income_smooth, expense_smooth)],
-                     color='#e74c3c', alpha=0.15, label='Дефицит')
+    # Добавляем значения на столбцы
+    for bar, val in zip(bars1, income_values):
+        if val > 0:
+            ax1.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(income_values)*0.01,
+                    f'{int(val):,}'.replace(',', ' '), ha='center', va='bottom', fontsize=8)
     
-    # Настройка основного графика
-    ax1.set_title(f'📈 {title} за {days} дней', fontsize=16, fontweight='bold', pad=20)
+    for bar, val in zip(bars2, expense_values):
+        if val > 0:
+            ax1.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(expense_values)*0.01,
+                    f'{int(val):,}'.replace(',', ' '), ha='center', va='bottom', fontsize=8)
+    
+    ax1.set_title(f'📈 {title} за {days} дней (по неделям)', fontsize=16, fontweight='bold', pad=20)
     ax1.set_ylabel('Сумма (₽)', fontsize=12)
-    ax1.legend(loc='upper left', fontsize=10)
-    ax1.grid(True, alpha=0.3, linestyle='--')
-    ax1.tick_params(axis='x', rotation=45, labelsize=9)
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(week_labels, rotation=45, ha='right')
+    ax1.legend(loc='upper left', fontsize=11)
+    ax1.grid(True, alpha=0.3, linestyle='--', axis='y')
     ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{int(x):,}'.replace(',', ' ')))
     
-    # Добавляем статистику на график
     balance = total_income - total_expense
     stats_text = (
         f"💰 Баланс: {format_currency(balance)}\n"
-        f"📈 Средний доход: {format_currency(total_income/days if total_income > 0 else 0)}\n"
-        f"📉 Средний расход: {format_currency(total_expense/days if total_expense > 0 else 0)}"
+        f"📈 Всего доходов: {format_currency(total_income)}\n"
+        f"📉 Всего расходов: {format_currency(total_expense)}"
     )
     ax1.text(0.02, 0.98, stats_text, transform=ax1.transAxes, fontsize=11,
              verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
     
-    # === ДОПОЛНИТЕЛЬНЫЙ ГРАФИК: НАКОПЛЕННЫЙ ИТОГ ===
+    # === НАКОПЛЕННЫЙ ИТОГ ===
     cumulative_income = []
     cumulative_expense = []
     cum_inc = 0
     cum_exp = 0
+    
     for inc, exp in zip(income_values, expense_values):
         cum_inc += inc
         cum_exp += exp
         cumulative_income.append(cum_inc)
         cumulative_expense.append(cum_exp)
     
-    ax2.plot(all_dates, cumulative_income, 'g-', label='Накопленные доходы', 
-             linewidth=2, color='#2ecc71')
-    ax2.plot(all_dates, cumulative_expense, 'r-', label='Накопленные расходы', 
-             linewidth=2, color='#e74c3c')
-    ax2.fill_between(all_dates, cumulative_income, cumulative_expense,
-                     color='#3498db', alpha=0.2)
+    ax2.plot(week_dates, cumulative_income, 'g-', label='Накопленные доходы', 
+             linewidth=2.5, color='#2ecc71', marker='o', markersize=6)
+    ax2.plot(week_dates, cumulative_expense, 'r-', label='Накопленные расходы', 
+             linewidth=2.5, color='#e74c3c', marker='s', markersize=6)
+    ax2.fill_between(week_dates, cumulative_income, cumulative_expense,
+                     color='#3498db', alpha=0.15)
     ax2.set_title('📊 Накопленный итог за период', fontsize=12, fontweight='bold')
-    ax2.set_xlabel('Дата', fontsize=10)
+    ax2.set_xlabel('Неделя', fontsize=10)
     ax2.set_ylabel('Сумма (₽)', fontsize=10)
     ax2.legend(loc='upper left', fontsize=9)
     ax2.grid(True, alpha=0.3, linestyle='--')
@@ -489,7 +510,6 @@ async def chart_start(message: types.Message, state: FSMContext):
     """Запрос периода для графика"""
     await state.set_state(ChartStates.waiting_for_period)
     
-    # Добавляем быстрые кнопки для удобства
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📅 30 дней", callback_data="chart_quick_30")],
         [InlineKeyboardButton(text="📅 7 дней", callback_data="chart_quick_7")],
@@ -553,7 +573,6 @@ async def process_period_input(message: types.Message, state: FSMContext):
         await cancel_action(message, state)
         return
     
-    # Парсим ввод
     days = parse_period(message.text)
     
     if days is None or days <= 0:
@@ -570,10 +589,9 @@ async def process_period_input(message: types.Message, state: FSMContext):
         )
         return
     
-    # Ограничиваем максимальный период (не более 365 дней)
     if days > 365:
         await message.answer(
-            "⚠️ Максимальный период — 365 дней (1 год).\n"
+            f"⚠️ Максимальный период — 365 дней (1 год).\n"
             f"Вы ввели {days} дней. Попробуйте еще раз:"
         )
         return
@@ -1070,47 +1088,113 @@ async def generate_period_report(callback: types.CallbackQuery, state: FSMContex
     
     balance = total_income - total_expense
     
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+    # === УЛУЧШЕННЫЕ ДИАГРАММЫ ===
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
     
+    # 1. Топ расходов по категориям
     if categories_exp:
-        sorted_exp = sorted(categories_exp.items(), key=lambda x: x[1], reverse=True)[:8]
-        cats, vals = zip(*sorted_exp) if sorted_exp else ([], [])
+        sorted_exp = sorted(categories_exp.items(), key=lambda x: x[1], reverse=True)
+        top_exp = sorted_exp[:5]
+        other_exp = sum(val for _, val in sorted_exp[5:])
+        
+        if other_exp > 0:
+            top_exp.append(('Остальное', other_exp))
+        
+        cats, vals = zip(*top_exp) if top_exp else ([], [])
         colors = plt.cm.RdYlGn_r([i/len(vals) for i in range(len(vals))])
+        
         wedges, texts, autotexts = ax1.pie(
             vals, 
             labels=cats, 
-            autopct=lambda pct: f'{pct:.1f}%' if pct > 2 else '',
+            autopct=lambda pct: f'{pct:.1f}%' if pct > 3 else '',
             colors=colors, 
             startangle=90,
-            labeldistance=1.2,
+            labeldistance=1.15,
             pctdistance=0.8,
-            textprops={'fontsize': 9}
+            textprops={'fontsize': 10}
         )
-        ax1.set_title('Расходы по категориям', fontsize=14, fontweight='bold')
+        ax1.set_title('Топ расходов', fontsize=14, fontweight='bold')
+        
+        table_text = ""
+        for cat, val in top_exp[:5]:
+            table_text += f"{cat}: {format_currency(val)}\n"
+        ax1.text(-0.3, -0.15, table_text, transform=ax1.transAxes, fontsize=10,
+                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.3))
+        
     else:
         ax1.text(0.5, 0.5, 'Нет расходов', ha='center', va='center')
-        ax1.set_title('Расходы по категориям', fontsize=14, fontweight='bold')
+        ax1.set_title('Топ расходов', fontsize=14, fontweight='bold')
     
+    # 2. Топ доходов по категориям
     if categories_inc:
-        sorted_inc = sorted(categories_inc.items(), key=lambda x: x[1], reverse=True)[:6]
-        cats, vals = zip(*sorted_inc) if sorted_inc else ([], [])
+        sorted_inc = sorted(categories_inc.items(), key=lambda x: x[1], reverse=True)
+        top_inc = sorted_inc[:5]
+        other_inc = sum(val for _, val in sorted_inc[5:])
+        
+        if other_inc > 0:
+            top_inc.append(('Остальное', other_inc))
+        
+        cats, vals = zip(*top_inc) if top_inc else ([], [])
         colors = plt.cm.Greens([i/len(vals) for i in range(len(vals))])
+        
         wedges, texts, autotexts = ax2.pie(
             vals, 
             labels=cats, 
-            autopct=lambda pct: f'{pct:.1f}%' if pct > 2 else '',
+            autopct=lambda pct: f'{pct:.1f}%' if pct > 3 else '',
             colors=colors, 
             startangle=90,
-            labeldistance=1.2,
+            labeldistance=1.15,
             pctdistance=0.8,
-            textprops={'fontsize': 9}
+            textprops={'fontsize': 10}
         )
-        ax2.set_title('Доходы по категориям', fontsize=14, fontweight='bold')
+        ax2.set_title('Топ доходов', fontsize=14, fontweight='bold')
+        
+        table_text = ""
+        for cat, val in top_inc[:5]:
+            table_text += f"{cat}: {format_currency(val)}\n"
+        ax2.text(-0.3, -0.15, table_text, transform=ax2.transAxes, fontsize=10,
+                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.3))
+        
     else:
         ax2.text(0.5, 0.5, 'Нет доходов', ha='center', va='center')
-        ax2.set_title('Доходы по категориям', fontsize=14, fontweight='bold')
+        ax2.set_title('Топ доходов', fontsize=14, fontweight='bold')
     
-    plt.suptitle(f'📊 Финансовый отчет за {days} дней', fontsize=16, fontweight='bold')
+    # 3. Соотношение доходов и расходов
+    total = total_income + total_expense
+    if total > 0:
+        sizes = [total_income, total_expense]
+        labels = ['Доходы', 'Расходы']
+        colors = ['#2ecc71', '#e74c3c']
+        ax3.pie(sizes, labels=labels, autopct='%1.1f%%', colors=colors, startangle=90)
+        ax3.set_title(f'Доходы: {format_currency(total_income)} | Расходы: {format_currency(total_expense)}', 
+                     fontsize=12, fontweight='bold')
+    else:
+        ax3.text(0.5, 0.5, 'Нет данных', ha='center', va='center')
+        ax3.set_title('Соотношение доходов и расходов', fontsize=14, fontweight='bold')
+    
+    # 4. Сводная статистика
+    ax4.axis('off')
+    balance = total_income - total_expense
+    balance_color = "🟢" if balance >= 0 else "🔴"
+    
+    exp_cat_count = len(categories_exp)
+    inc_cat_count = len(categories_inc)
+    
+    stats_text = (
+        f"📊 **Сводка за {days} дней**\n\n"
+        f"{balance_color} **Баланс:** {format_currency(balance)}\n\n"
+        f"💵 **Доходы:** {format_currency(total_income)}\n"
+        f"💰 **Расходы:** {format_currency(total_expense)}\n\n"
+        f"📋 **Операций:** {len(operations)}\n"
+        f"📂 **Категорий расходов:** {exp_cat_count}\n"
+        f"📂 **Категорий доходов:** {inc_cat_count}\n\n"
+        f"💳 **Средний расход:** {format_currency(total_expense/days if total_expense > 0 else 0)}"
+    )
+    ax4.text(0.1, 0.5, stats_text, transform=ax4.transAxes, fontsize=12,
+             verticalalignment='center', bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.5))
+    ax4.set_title('Статистика', fontsize=14, fontweight='bold')
+    
+    plt.suptitle(f'📊 Финансовый отчет за {days} дней', fontsize=18, fontweight='bold')
     plt.tight_layout()
     
     buf = io.BytesIO()
