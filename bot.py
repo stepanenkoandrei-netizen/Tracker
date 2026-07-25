@@ -11,6 +11,7 @@ import os
 import json
 import threading
 import re
+import numpy as np
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -299,7 +300,6 @@ def parse_period(text):
     """
     text = text.lower().strip()
     
-    # Пробуем парсить как число (дни)
     try:
         days = int(text)
         if days > 0:
@@ -307,38 +307,32 @@ def parse_period(text):
     except:
         pass
     
-    # Парсим "X дней"
     match = re.search(r'(\d+)\s*дн', text)
     if match:
         return int(match.group(1))
     
-    # Парсим "X недель"
     match = re.search(r'(\d+)\s*нед', text)
     if match:
         return int(match.group(1)) * 7
     
-    # Парсим "X месяц"
     match = re.search(r'(\d+)\s*мес', text)
     if match:
         return int(match.group(1)) * 30
     
-    # Парсим "месяц" (1 месяц)
     if 'месяц' in text or 'мес' in text:
         if 'пол' not in text:
             return 30
     
-    # Парсим "неделя" (1 неделя)
     if 'недел' in text:
         return 7
     
     return None
 
-# ==================== ФУНКЦИЯ ПОСТРОЕНИЯ ГРАФИКА (УЛУЧШЕННАЯ) ====================
+# ==================== ФУНКЦИЯ ПОСТРОЕНИЯ ГРАФИКА ====================
 
 def create_chart(operations, days, title="Динамика доходов и расходов"):
     """Создает комбинированный график с группировкой по неделям"""
     
-    # Собираем данные по дням
     daily_income = defaultdict(float)
     daily_expense = defaultdict(float)
     total_income = 0
@@ -357,12 +351,10 @@ def create_chart(operations, days, title="Динамика доходов и р�
         except:
             continue
     
-    # Сортируем даты
     all_dates = sorted(set(daily_income.keys()) | set(daily_expense.keys()))
     if not all_dates:
         return None, 0, 0, 0
     
-    # === ГРУППИРУЕМ ПО НЕДЕЛЯМ ===
     weekly_income = defaultdict(float)
     weekly_expense = defaultdict(float)
     
@@ -384,7 +376,6 @@ def create_chart(operations, days, title="Динамика доходов и р�
     
     week_dates = sorted(set(weekly_income.keys()) | set(weekly_expense.keys()))
     
-    # Если недель меньше 3, используем ежедневные данные
     if len(week_dates) < 3:
         week_dates = all_dates
         weekly_income = daily_income
@@ -405,10 +396,8 @@ def create_chart(operations, days, title="Динамика доходов и р�
     
     week_labels = [format_week_label(d) for d in week_dates]
     
-    # Создаем график
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [3, 1]})
     
-    # === ОСНОВНОЙ ГРАФИК (НЕДЕЛЬНЫЕ ДАННЫЕ) ===
     x = range(len(week_dates))
     width = 0.35
     
@@ -417,7 +406,6 @@ def create_chart(operations, days, title="Динамика доходов и р�
     bars2 = ax1.bar([i + width/2 for i in x], expense_values, width, 
                     label='Расходы', color='#e74c3c', alpha=0.8, edgecolor='#c0392b')
     
-    # Добавляем значения на столбцы
     for bar, val in zip(bars1, income_values):
         if val > 0:
             ax1.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(income_values)*0.01,
@@ -445,7 +433,6 @@ def create_chart(operations, days, title="Динамика доходов и р�
     ax1.text(0.02, 0.98, stats_text, transform=ax1.transAxes, fontsize=11,
              verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
     
-    # === НАКОПЛЕННЫЙ ИТОГ ===
     cumulative_income = []
     cumulative_expense = []
     cum_inc = 0
@@ -1088,91 +1075,179 @@ async def generate_period_report(callback: types.CallbackQuery, state: FSMContex
     
     balance = total_income - total_expense
     
-    # === УЛУЧШЕННЫЕ ДИАГРАММЫ ===
+    # === УЛУЧШЕННЫЕ ДИАГРАММЫ (БЕЗ НАЛОЖЕНИЙ) ===
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
     
-    # 1. Топ расходов по категориям
-    if categories_exp:
-        sorted_exp = sorted(categories_exp.items(), key=lambda x: x[1], reverse=True)
-        top_exp = sorted_exp[:5]
-        other_exp = sum(val for _, val in sorted_exp[5:])
-        
-        if other_exp > 0:
-            top_exp.append(('Остальное', other_exp))
-        
-        cats, vals = zip(*top_exp) if top_exp else ([], [])
-        colors = plt.cm.RdYlGn_r([i/len(vals) for i in range(len(vals))])
-        
-        wedges, texts, autotexts = ax1.pie(
-            vals, 
-            labels=cats, 
-            autopct=lambda pct: f'{pct:.1f}%' if pct > 3 else '',
-            colors=colors, 
-            startangle=90,
-            labeldistance=1.15,
-            pctdistance=0.8,
-            textprops={'fontsize': 10}
-        )
-        ax1.set_title('Топ расходов', fontsize=14, fontweight='bold')
-        
-        table_text = ""
-        for cat, val in top_exp[:5]:
-            table_text += f"{cat}: {format_currency(val)}\n"
-        ax1.text(-0.3, -0.15, table_text, transform=ax1.transAxes, fontsize=10,
-                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.3))
-        
-    else:
-        ax1.text(0.5, 0.5, 'Нет расходов', ha='center', va='center')
-        ax1.set_title('Топ расходов', fontsize=14, fontweight='bold')
-    
-    # 2. Топ доходов по категориям
+    # ===== 1. ДОХОДЫ ПО КАТЕГОРИЯМ =====
     if categories_inc:
         sorted_inc = sorted(categories_inc.items(), key=lambda x: x[1], reverse=True)
-        top_inc = sorted_inc[:5]
-        other_inc = sum(val for _, val in sorted_inc[5:])
         
-        if other_inc > 0:
-            top_inc.append(('Остальное', other_inc))
+        large_inc = []
+        small_inc = []
+        for cat, val in sorted_inc:
+            percentage = (val / total_income * 100) if total_income > 0 else 0
+            if percentage >= 5:
+                large_inc.append((cat, val))
+            else:
+                small_inc.append((cat, val))
         
-        cats, vals = zip(*top_inc) if top_inc else ([], [])
+        if small_inc:
+            small_total = sum(val for _, val in small_inc)
+            large_inc.append(('📌 Остальное', small_total))
+        
+        if len(large_inc) <= 1 and len(sorted_inc) > 1:
+            large_inc = sorted_inc[:5]
+            if len(sorted_inc) > 5:
+                other_total = sum(val for _, val in sorted_inc[5:])
+                large_inc.append(('📌 Остальное', other_total))
+        
+        cats, vals = zip(*large_inc) if large_inc else ([], [])
+        
+        def make_autopct(values):
+            def my_autopct(pct):
+                return f'{pct:.1f}%' if pct >= 3 else ''
+            return my_autopct
+        
         colors = plt.cm.Greens([i/len(vals) for i in range(len(vals))])
         
         wedges, texts, autotexts = ax2.pie(
-            vals, 
-            labels=cats, 
-            autopct=lambda pct: f'{pct:.1f}%' if pct > 3 else '',
-            colors=colors, 
+            vals,
+            labels=cats,
+            autopct=make_autopct(vals),
+            colors=colors,
             startangle=90,
             labeldistance=1.15,
-            pctdistance=0.8,
-            textprops={'fontsize': 10}
+            pctdistance=0.75,
+            textprops={'fontsize': 11, 'weight': 'bold'},
+            wedgeprops={'linewidth': 1, 'edgecolor': 'white'}
         )
-        ax2.set_title('Топ доходов', fontsize=14, fontweight='bold')
         
-        table_text = ""
-        for cat, val in top_inc[:5]:
+        for text in autotexts:
+            text.set_fontsize(10)
+            text.set_color('black')
+            text.set_weight('bold')
+        
+        if len(vals) > 3:
+            for i, (wedge, val) in enumerate(zip(wedges, vals)):
+                percentage = (val / total_income * 100) if total_income > 0 else 0
+                if percentage < 5 and percentage > 0.5:
+                    ang = (wedge.theta2 - wedge.theta1) / 2 + wedge.theta1
+                    y = 1.2 * np.sin(np.radians(ang))
+                    x = 1.2 * np.cos(np.radians(ang))
+                    label = f'{cats[i]}\n{percentage:.1f}%'
+                    ax2.annotate(label, xy=(x, y), xytext=(x*1.35, y*1.25),
+                                fontsize=8, ha='center', va='center',
+                                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7),
+                                arrowprops=dict(arrowstyle='->', color='gray', lw=0.5))
+        
+        ax2.set_title('📈 Доходы по категориям', fontsize=14, fontweight='bold')
+        
+        table_text = "📊 **Суммы:**\n"
+        for cat, val in large_inc[:6]:
             table_text += f"{cat}: {format_currency(val)}\n"
-        ax2.text(-0.3, -0.15, table_text, transform=ax2.transAxes, fontsize=10,
-                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.3))
+        if len(large_inc) > 6:
+            table_text += f"... и еще {len(large_inc)-6} категорий"
+        
+        ax2.text(-0.35, -0.15, table_text, transform=ax2.transAxes, fontsize=9,
+                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
         
     else:
-        ax2.text(0.5, 0.5, 'Нет доходов', ha='center', va='center')
-        ax2.set_title('Топ доходов', fontsize=14, fontweight='bold')
+        ax2.text(0.5, 0.5, 'Нет доходов', ha='center', va='center', fontsize=14)
+        ax2.set_title('📈 Доходы по категориям', fontsize=14, fontweight='bold')
     
-    # 3. Соотношение доходов и расходов
+    # ===== 2. РАСХОДЫ ПО КАТЕГОРИЯМ =====
+    if categories_exp:
+        sorted_exp = sorted(categories_exp.items(), key=lambda x: x[1], reverse=True)
+        
+        large_exp = []
+        small_exp = []
+        for cat, val in sorted_exp:
+            percentage = (val / total_expense * 100) if total_expense > 0 else 0
+            if percentage >= 5:
+                large_exp.append((cat, val))
+            else:
+                small_exp.append((cat, val))
+        
+        if small_exp:
+            small_total = sum(val for _, val in small_exp)
+            large_exp.append(('📌 Остальное', small_total))
+        
+        if len(large_exp) <= 1 and len(sorted_exp) > 1:
+            large_exp = sorted_exp[:5]
+            if len(sorted_exp) > 5:
+                other_total = sum(val for _, val in sorted_exp[5:])
+                large_exp.append(('📌 Остальное', other_total))
+        
+        cats, vals = zip(*large_exp) if large_exp else ([], [])
+        
+        colors = plt.cm.RdYlGn_r([i/len(vals) for i in range(len(vals))])
+        
+        wedges, texts, autotexts = ax1.pie(
+            vals,
+            labels=cats,
+            autopct=lambda pct: f'{pct:.1f}%' if pct >= 3 else '',
+            colors=colors,
+            startangle=90,
+            labeldistance=1.15,
+            pctdistance=0.75,
+            textprops={'fontsize': 11, 'weight': 'bold'},
+            wedgeprops={'linewidth': 1, 'edgecolor': 'white'}
+        )
+        
+        for text in autotexts:
+            text.set_fontsize(10)
+            text.set_color('black')
+            text.set_weight('bold')
+        
+        if len(vals) > 3:
+            for i, (wedge, val) in enumerate(zip(wedges, vals)):
+                percentage = (val / total_expense * 100) if total_expense > 0 else 0
+                if percentage < 5 and percentage > 0.5:
+                    ang = (wedge.theta2 - wedge.theta1) / 2 + wedge.theta1
+                    y = 1.2 * np.sin(np.radians(ang))
+                    x = 1.2 * np.cos(np.radians(ang))
+                    label = f'{cats[i]}\n{percentage:.1f}%'
+                    ax1.annotate(label, xy=(x, y), xytext=(x*1.35, y*1.25),
+                                fontsize=8, ha='center', va='center',
+                                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7),
+                                arrowprops=dict(arrowstyle='->', color='gray', lw=0.5))
+        
+        ax1.set_title('💸 Расходы по категориям', fontsize=14, fontweight='bold')
+        
+        table_text = "📊 **Суммы:**\n"
+        for cat, val in large_exp[:6]:
+            table_text += f"{cat}: {format_currency(val)}\n"
+        if len(large_exp) > 6:
+            table_text += f"... и еще {len(large_exp)-6} категорий"
+        
+        ax1.text(-0.35, -0.15, table_text, transform=ax1.transAxes, fontsize=9,
+                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        
+    else:
+        ax1.text(0.5, 0.5, 'Нет расходов', ha='center', va='center', fontsize=14)
+        ax1.set_title('💸 Расходы по категориям', fontsize=14, fontweight='bold')
+    
+    # ===== 3. СООТНОШЕНИЕ ДОХОДОВ И РАСХОДОВ =====
     total = total_income + total_expense
     if total > 0:
         sizes = [total_income, total_expense]
-        labels = ['Доходы', 'Расходы']
+        labels = ['💰 Доходы', '💸 Расходы']
         colors = ['#2ecc71', '#e74c3c']
-        ax3.pie(sizes, labels=labels, autopct='%1.1f%%', colors=colors, startangle=90)
-        ax3.set_title(f'Доходы: {format_currency(total_income)} | Расходы: {format_currency(total_expense)}', 
+        wedges, texts, autotexts = ax3.pie(
+            sizes, 
+            labels=labels, 
+            autopct='%1.1f%%', 
+            colors=colors, 
+            startangle=90,
+            textprops={'fontsize': 12, 'weight': 'bold'}
+        )
+        ax3.set_title(f'Доходы: {format_currency(total_income)}\nРасходы: {format_currency(total_expense)}', 
                      fontsize=12, fontweight='bold')
     else:
-        ax3.text(0.5, 0.5, 'Нет данных', ha='center', va='center')
+        ax3.text(0.5, 0.5, 'Нет данных', ha='center', va='center', fontsize=14)
         ax3.set_title('Соотношение доходов и расходов', fontsize=14, fontweight='bold')
     
-    # 4. Сводная статистика
+    # ===== 4. СТАТИСТИКА =====
     ax4.axis('off')
     balance = total_income - total_expense
     balance_color = "🟢" if balance >= 0 else "🔴"
@@ -1192,7 +1267,7 @@ async def generate_period_report(callback: types.CallbackQuery, state: FSMContex
     )
     ax4.text(0.1, 0.5, stats_text, transform=ax4.transAxes, fontsize=12,
              verticalalignment='center', bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.5))
-    ax4.set_title('Статистика', fontsize=14, fontweight='bold')
+    ax4.set_title('📋 Статистика', fontsize=14, fontweight='bold')
     
     plt.suptitle(f'📊 Финансовый отчет за {days} дней', fontsize=18, fontweight='bold')
     plt.tight_layout()
