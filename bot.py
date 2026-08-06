@@ -88,8 +88,8 @@ def init_worksheets():
     except:
         settings_ws = sheet.add_worksheet("Settings", 100, 10)
         settings_ws.append_row(["Категории расходов", "Категории доходов"])
-        default_expenses = ["🍎 Продукты", "🚗 Транспорт", "🏠 ЖКХ", "☕ Кафе", 
-                  "🛍️ Шопинг", "💊 Здоровье", "🎮 Развлечения", "📚 Образование", "🚕 Такси"]
+        default_expenses = ["🍎 Продукты", "🚗 Проезд", "🏠 Квартира", "☕ Прогулки", 
+                          "🛍️ Необходимый шопинг", "🎮 хотелки", "🚕 Такси", "📈 Акции"]
         default_incomes = ["💰 Зарплата", "💳 Фриланс", "📈 Инвестиции", "🎁 Подарки", "💵 Прочее"]
         
         for i, cat in enumerate(default_expenses, 2):
@@ -129,13 +129,17 @@ class DeleteStates(StatesGroup):
 class ChartStates(StatesGroup):
     waiting_for_period = State()
 
+class StatsStates(StatesGroup):
+    waiting_for_month = State()
+    waiting_for_year = State()
+
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 
 def get_main_keyboard(user_id):
     buttons = [
         [KeyboardButton(text="💰 Расход"), KeyboardButton(text="💵 Доход")],
         [KeyboardButton(text="⚡ Быстрый ввод"), KeyboardButton(text="📊 Баланс")],
-        [KeyboardButton(text="📈 График")],
+        [KeyboardButton(text="📈 График"), KeyboardButton(text="📊 Статистика")],
         [KeyboardButton(text="📋 История"), KeyboardButton(text="📅 Отчет")],
         [KeyboardButton(text="🗑 Удалить")],
     ]
@@ -294,10 +298,6 @@ def get_frequent_categories_kb(tx_type=None):
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 def parse_period(text):
-    """
-    Парсит текстовый ввод периода и возвращает количество дней
-    Поддерживает: "30", "7 дней", "2 недели", "1 месяц", "3 месяца"
-    """
     text = text.lower().strip()
     
     try:
@@ -328,7 +328,7 @@ def parse_period(text):
     
     return None
 
-# ==================== ФУНКЦИЯ ПОСТРОЕНИЯ ГРАФИКА (ИСПРАВЛЕННАЯ) ====================
+# ==================== ФУНКЦИЯ ПОСТРОЕНИЯ ГРАФИКА ====================
 
 def create_chart(operations, days, title="Динамика доходов и расходов"):
     """Создает комбинированный график — для коротких периодов (≤14 дней) показывает дни, для длинных — недели"""
@@ -355,7 +355,6 @@ def create_chart(operations, days, title="Динамика доходов и р�
     if not all_dates:
         return None, 0, 0, 0
     
-    # === Определяем, нужно ли группировать по неделям ===
     USE_WEEKLY = days > 14
     
     if USE_WEEKLY:
@@ -380,7 +379,6 @@ def create_chart(operations, days, title="Динамика доходов и р�
         
         week_dates = sorted(set(weekly_income.keys()) | set(weekly_expense.keys()))
         
-        # Если недель меньше 2, всё равно показываем дни
         if len(week_dates) < 2:
             week_dates = all_dates
             weekly_income = daily_income
@@ -394,7 +392,6 @@ def create_chart(operations, days, title="Динамика доходов и р�
         income_values = [daily_income.get(date, 0) for date in week_dates]
         expense_values = [daily_expense.get(date, 0) for date in week_dates]
     
-    # === Форматируем подписи ===
     def format_label(date_str):
         try:
             dt = datetime.strptime(date_str, '%Y-%m-%d')
@@ -408,7 +405,6 @@ def create_chart(operations, days, title="Динамика доходов и р�
     
     week_labels = [format_label(d) for d in week_dates]
     
-    # Создаем график
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10), gridspec_kw={'height_ratios': [3, 1]})
     
     x = range(len(week_dates))
@@ -447,7 +443,6 @@ def create_chart(operations, days, title="Динамика доходов и р�
     ax1.text(0.02, 0.98, stats_text, transform=ax1.transAxes, fontsize=11,
              verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
     
-    # === НАКОПЛЕННЫЙ ИТОГ ===
     cumulative_income = []
     cumulative_expense = []
     cum_inc = 0
@@ -484,6 +479,286 @@ def create_chart(operations, days, title="Динамика доходов и р�
     
     return buf, total_income, total_expense, balance
 
+# ==================== СТАТИСТИКА ЗА МЕСЯЦ ====================
+
+@dp.message(F.text == "📊 Статистика")
+async def stats_start(message: types.Message, state: FSMContext):
+    """Начало выбора месяца для статистики"""
+    await state.set_state(StatsStates.waiting_for_month)
+    
+    months = [
+        ("Янв", 1), ("Фев", 2), ("Мар", 3), ("Апр", 4),
+        ("Май", 5), ("Июн", 6), ("Июл", 7), ("Авг", 8),
+        ("Сен", 9), ("Окт", 10), ("Ноя", 11), ("Дек", 12)
+    ]
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    row = []
+    for name, num in months:
+        row.append(InlineKeyboardButton(text=name, callback_data=f"stats_month_{num}"))
+        if len(row) == 4:
+            kb.inline_keyboard.append(row)
+            row = []
+    if row:
+        kb.inline_keyboard.append(row)
+    
+    kb.inline_keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")])
+    
+    current_month = datetime.now().month
+    current_year = datetime.now().year
+    
+    await message.answer(
+        f"📊 **Выберите месяц для статистики**\n\n"
+        f"📅 Текущий месяц: {months[current_month-1][0]} {current_year}\n\n"
+        f"После выбора месяца укажите год.",
+        parse_mode="Markdown",
+        reply_markup=kb
+    )
+
+@dp.callback_query(StatsStates.waiting_for_month, F.data.startswith("stats_month_"))
+async def stats_select_month(callback: types.CallbackQuery, state: FSMContext):
+    """Выбор месяца"""
+    month = int(callback.data.split("_")[2])
+    await state.update_data(stats_month=month)
+    await state.set_state(StatsStates.waiting_for_year)
+    
+    current_year = datetime.now().year
+    years = list(range(current_year - 3, current_year + 1))
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    row = []
+    for year in years:
+        row.append(InlineKeyboardButton(text=str(year), callback_data=f"stats_year_{year}"))
+        if len(row) == 4:
+            kb.inline_keyboard.append(row)
+            row = []
+    if row:
+        kb.inline_keyboard.append(row)
+    
+    kb.inline_keyboard.append([InlineKeyboardButton(text="🔙 Назад", callback_data="back_to_main")])
+    
+    months = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"]
+    await callback.message.edit_text(
+        f"📊 **Выберите год для {months[month-1]}**",
+        parse_mode="Markdown",
+        reply_markup=kb
+    )
+    await callback.answer()
+
+@dp.callback_query(StatsStates.waiting_for_year, F.data.startswith("stats_year_"))
+async def stats_generate(callback: types.CallbackQuery, state: FSMContext):
+    """Генерация статистики за выбранный месяц и год (ВСЕ ДНИ МЕСЯЦА)"""
+    await callback.answer("🔄 Генерирую статистику...")
+    
+    year = int(callback.data.split("_")[2])
+    data = await state.get_data()
+    month = data.get('stats_month')
+    
+    if not month:
+        await callback.message.edit_text("❌ Ошибка! Попробуйте заново.")
+        return
+    
+    await callback.message.edit_text(f"📊 **Статистика за {year}-{month:02d}**\n\n🔄 Загружаю данные...")
+    
+    start_date = datetime(year, month, 1)
+    if month == 12:
+        end_date = datetime(year + 1, 1, 1)
+    else:
+        end_date = datetime(year, month + 1, 1)
+    
+    days_in_month = (end_date - start_date).days
+    
+    try:
+        records = operations_ws.get_all_records()
+        if not records:
+            await callback.message.edit_text(f"📭 Нет операций за {year}-{month:02d}.")
+            await state.clear()
+            return
+        
+        # Фильтруем операции за выбранный месяц
+        month_operations = []
+        for record in records:
+            try:
+                record_date = datetime.strptime(record.get('Дата', ''), '%Y-%m-%d')
+                if start_date <= record_date < end_date:
+                    month_operations.append(record)
+            except:
+                continue
+        
+        # Собираем статистику — ВСЕ ДНИ МЕСЯЦА
+        daily_income = defaultdict(float)
+        daily_expense = defaultdict(float)
+        categories_income = defaultdict(float)
+        categories_expense = defaultdict(float)
+        total_income = 0
+        total_expense = 0
+        max_income = 0
+        max_expense = 0
+        max_income_date = None
+        max_expense_date = None
+        
+        for op in month_operations:
+            try:
+                amount = float(op.get('Сумма', 0))
+                date = op.get('Дата', '')
+                category = op.get('Категория', 'Без категории')
+                
+                if op.get('Тип') == 'Доход':
+                    total_income += amount
+                    daily_income[date] += amount
+                    categories_income[category] += amount
+                    if amount > max_income:
+                        max_income = amount
+                        max_income_date = date
+                else:
+                    total_expense += amount
+                    daily_expense[date] += amount
+                    categories_expense[category] += amount
+                    if amount > max_expense:
+                        max_expense = amount
+                        max_expense_date = date
+            except:
+                continue
+        
+        balance = total_income - total_expense
+        
+        # === СОЗДАЕМ ОТЧЕТ ===
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 14))
+        months_names = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"]
+        fig.suptitle(f'📊 Статистика за {months_names[month-1]} {year}', fontsize=18, fontweight='bold')
+        
+        # 1. Ежедневная динамика — ВСЕ ДНИ МЕСЯЦА
+        all_days = [start_date + timedelta(days=i) for i in range(days_in_month)]
+        day_labels = [d.strftime('%d.%m') for d in all_days]
+        income_by_day = [daily_income.get(d.strftime('%Y-%m-%d'), 0) for d in all_days]
+        expense_by_day = [daily_expense.get(d.strftime('%Y-%m-%d'), 0) for d in all_days]
+        
+        x = range(len(all_days))
+        width = 0.35
+        
+        bars1 = ax1.bar([i - width/2 for i in x], income_by_day, width, 
+                        label='Доходы', color='#2ecc71', alpha=0.7)
+        bars2 = ax1.bar([i + width/2 for i in x], expense_by_day, width, 
+                        label='Расходы', color='#e74c3c', alpha=0.7)
+        
+        # Подписи каждые 3 дня
+        show_every = max(1, days_in_month // 15)
+        ax1.set_xticks(x[::show_every])
+        ax1.set_xticklabels(day_labels[::show_every], rotation=45, ha='right', fontsize=8)
+        
+        ax1.set_title('📈 Ежедневная динамика (все дни месяца)', fontsize=14, fontweight='bold')
+        ax1.set_ylabel('Сумма (₽)', fontsize=11)
+        ax1.legend(loc='upper left')
+        ax1.grid(True, alpha=0.3, linestyle='--', axis='y')
+        ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'{int(x):,}'.replace(',', ' ')))
+        
+        # 2. Топ категорий расходов
+        if categories_expense:
+            sorted_exp = sorted(categories_expense.items(), key=lambda x: x[1], reverse=True)
+            top_exp = sorted_exp[:6]
+            if len(sorted_exp) > 6:
+                other_sum = sum(v for _, v in sorted_exp[6:])
+                top_exp.append(('📌 Остальное', other_sum))
+            
+            cats, vals = zip(*top_exp)
+            colors = plt.cm.RdYlGn_r([i/len(vals) for i in range(len(vals))])
+            wedges, texts, autotexts = ax2.pie(
+                vals, labels=cats,
+                autopct=lambda pct: f'{pct:.1f}%' if pct > 3 else '',
+                colors=colors, startangle=90,
+                labeldistance=1.15, pctdistance=0.75,
+                textprops={'fontsize': 10, 'weight': 'bold'}
+            )
+            ax2.set_title('💸 Топ расходов', fontsize=14, fontweight='bold')
+            
+            table_text = "📊 **Суммы:**\n"
+            for cat, val in top_exp[:5]:
+                table_text += f"{cat}: {format_currency(val)}\n"
+            ax2.text(-0.35, -0.15, table_text, transform=ax2.transAxes, fontsize=9,
+                    verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        else:
+            ax2.text(0.5, 0.5, 'Нет расходов', ha='center', va='center', fontsize=14)
+            ax2.set_title('💸 Топ расходов', fontsize=14, fontweight='bold')
+        
+        # 3. Топ категорий доходов
+        if categories_income:
+            sorted_inc = sorted(categories_income.items(), key=lambda x: x[1], reverse=True)
+            top_inc = sorted_inc[:6]
+            if len(sorted_inc) > 6:
+                other_sum = sum(v for _, v in sorted_inc[6:])
+                top_inc.append(('📌 Остальное', other_sum))
+            
+            cats, vals = zip(*top_inc)
+            colors = plt.cm.Greens([i/len(vals) for i in range(len(vals))])
+            wedges, texts, autotexts = ax3.pie(
+                vals, labels=cats,
+                autopct=lambda pct: f'{pct:.1f}%' if pct > 3 else '',
+                colors=colors, startangle=90,
+                labeldistance=1.15, pctdistance=0.75,
+                textprops={'fontsize': 10, 'weight': 'bold'}
+            )
+            ax3.set_title('💰 Топ доходов', fontsize=14, fontweight='bold')
+            
+            table_text = "📊 **Суммы:**\n"
+            for cat, val in top_inc[:5]:
+                table_text += f"{cat}: {format_currency(val)}\n"
+            ax3.text(-0.35, -0.15, table_text, transform=ax3.transAxes, fontsize=9,
+                    verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        else:
+            ax3.text(0.5, 0.5, 'Нет доходов', ha='center', va='center', fontsize=14)
+            ax3.set_title('💰 Топ доходов', fontsize=14, fontweight='bold')
+        
+        # 4. Сводная статистика
+        ax4.axis('off')
+        balance_color = "🟢" if balance >= 0 else "🔴"
+        
+        # Считаем количество дней с доходами и расходами
+        days_with_income = sum(1 for v in income_by_day if v > 0)
+        days_with_expense = sum(1 for v in expense_by_day if v > 0)
+        
+        stats_text = (
+            f"📊 **Сводка за {months_names[month-1]} {year}**\n\n"
+            f"{balance_color} **Баланс:** {format_currency(balance)}\n\n"
+            f"💵 **Доходы:** {format_currency(total_income)}\n"
+            f"💰 **Расходы:** {format_currency(total_expense)}\n\n"
+            f"📋 **Операций:** {len(month_operations)}\n"
+            f"📂 **Категорий:** {len(categories_expense) + len(categories_income)}\n\n"
+            f"📈 **Средний доход:** {format_currency(total_income/days_in_month if total_income > 0 else 0)}\n"
+            f"📉 **Средний расход:** {format_currency(total_expense/days_in_month if total_expense > 0 else 0)}\n\n"
+            f"📊 **Дней с доходами:** {days_with_income} из {days_in_month}\n"
+            f"📊 **Дней с расходами:** {days_with_expense} из {days_in_month}\n\n"
+            f"🏆 **Макс доход:** {format_currency(max_income)} ({max_income_date or '—'})\n"
+            f"🏆 **Макс расход:** {format_currency(max_expense)} ({max_expense_date or '—'})"
+        )
+        ax4.text(0.1, 0.5, stats_text, transform=ax4.transAxes, fontsize=11,
+                 verticalalignment='center', bbox=dict(boxstyle='round', facecolor='lightgray', alpha=0.5))
+        ax4.set_title('📋 Детальная статистика', fontsize=14, fontweight='bold')
+        
+        plt.tight_layout()
+        
+        buf = io.BytesIO()
+        plt.savefig(buf, format='png', dpi=300, bbox_inches='tight')
+        buf.seek(0)
+        plt.close()
+        
+        await callback.message.delete()
+        await callback.message.answer_photo(
+            BufferedInputFile(buf.getvalue(), filename=f"stats_{year}_{month:02d}.png"),
+            caption=f"📊 **Статистика за {months_names[month-1]} {year}**\n\n"
+                    f"💵 Доходы: {format_currency(total_income)}\n"
+                    f"💰 Расходы: {format_currency(total_expense)}\n"
+                    f"📈 Баланс: {format_currency(balance)}\n"
+                    f"📋 Всего операций: {len(month_operations)}",
+            parse_mode="Markdown",
+            reply_markup=get_main_keyboard(callback.from_user.id)
+        )
+        await state.clear()
+        
+    except Exception as e:
+        logging.error(f"Ошибка генерации статистики: {e}")
+        await callback.message.edit_text("❌ Ошибка при генерации статистики. Попробуйте позже.")
+        await state.clear()
+
 # ==================== ОБРАБОТЧИКИ КОМАНД ====================
 
 @dp.message(Command("start"))
@@ -501,6 +776,7 @@ async def cmd_start(message: types.Message):
         "📊 **Доступные команды:**\n"
         "• 📊 Баланс - текущий баланс\n"
         "• 📈 График - построить график за любой период\n"
+        "• 📊 Статистика - детальная статистика за месяц\n"
         "• 📋 История - последние операции\n"
         "• 📅 Отчет - подробный отчет за период\n"
         "• 🗑 Удалить - удаление операций"
@@ -1642,10 +1918,16 @@ async def go_back(message: types.Message, state: FSMContext):
             "🔙 Возврат в главное меню",
             reply_markup=get_main_keyboard(message.from_user.id)
         )
+    elif current_state == StatsStates.waiting_for_month or current_state == StatsStates.waiting_for_year:
+        await state.clear()
+        await message.answer(
+            "🔙 Возврат в главное меню",
+            reply_markup=get_main_keyboard(message.from_user.id)
+        )
     else:
         await cancel_action(message, state)
 
-@dp.message(F.text & ~F.text.startswith('/') & ~F.text.in_({"💰 Расход", "💵 Доход", "⚡ Быстрый ввод", "📊 Баланс", "📈 График", "📋 История", "📅 Отчет", "🗑 Удалить", "⚙️ Админ-панель", "❌ Отмена", "🔙 Назад", "📝 Без комментария", "📋 Все категории"}))
+@dp.message(F.text & ~F.text.startswith('/') & ~F.text.in_({"💰 Расход", "💵 Доход", "⚡ Быстрый ввод", "📊 Баланс", "📈 График", "📊 Статистика", "📋 История", "📅 Отчет", "🗑 Удалить", "⚙️ Админ-панель", "❌ Отмена", "🔙 Назад", "📝 Без комментария", "📋 Все категории"}))
 async def quick_text_input(message: types.Message):
     parts = message.text.strip().split(maxsplit=1)
     
